@@ -4,20 +4,23 @@ import numpy as np
 from ultralytics import YOLO
 from adafruit_servokit import ServoKit
 
-# Initialize the 16-channel PCA9685 board
-# This connects over I2C automatically
+# Initialize all 16 channels on the PCA9685 board
 kit = ServoKit(channels=16)
 
-# Set up Servo 0 (Base rotation example)
-# Adjust min_pulse and max_pulse if your servos need exact calibration
-kit.servo[0].set_pulse_width_range(500, 2500)
+# Setup all 6 active servos (Channels 0 to 5)
+for i in range(6):
+    kit.servo[i].set_pulse_width_range(500, 2500)
 
-# Load the downloaded hand-pose model
+# Define safe mechanical limits for your fingers (adjust based on your string/wire tension)
+FINGER_CLOSE = 10    # Angle when finger is pulled tight / closed
+FINGER_OPEN = 170    # Angle when finger is released / wide open
+
+# Load tracking model
 model = YOLO('yolov8n-pose.pt')
 
-print("AI Tracking + Servo Controller Initialized... Press 'q' to exit.")
+print("Bionic Hand 6-Servo System Active... Press 'q' to exit.")
 
-# Open rpicam-vid pipe
+# Open rpicam-vid stream
 cmd = [
     'rpicam-vid', '-t', '0',
     '--width', '320', '--height', '240',
@@ -41,25 +44,38 @@ try:
         for r in results:
             if r.keypoints is not None and len(r.keypoints.xy) > 0:
                 joints = r.keypoints.xy[0].cpu().numpy()
-                if len(joints) > 0:
-                    # Capture tracked wrist coordinate
+                if len(joints) > 5: # Make sure upper body/hand keypoints are visible
+                    
+                    # 1. Wrist Base Rotation (Servo 0) - Track side-to-side
                     wrist_x = joints[0][0]
+                    base_angle = 10 + (wrist_x / 320.0) * (170 - 10)
+                    kit.servo[0].angle = max(10, min(170, base_angle))
+
+                    # 2. Finger Gestures Logic (Servos 1 to 5)
+                    # We compare the height of upper points vs lower points to see if hand is open
+                    point_high = joints[1][1]  # Higher point up the arm/hand
+                    point_low = joints[0][1]   # Lower point (wrist)
                     
-                    # --- LINEAR MAP EQUATION ---
-                    # Map pixel space (0 to 320) to physical angles (10 to 170 degrees)
-                    # Safe limits protect the physical 3D printed/acrylic arm joints
-                    target_angle = 10 + (wrist_x / 320.0) * (170 - 10)
-                    target_angle = max(10, min(170, target_angle)) # Bound check
-                    
-                    print(f"Wrist X: {wrist_x:.1f}px ---> Writing Servo 0 Angle: {target_angle:.1f}°")
-                    
-                    # Direct hardware write to PCA9685 channel 0
-                    kit.servo[0].angle = target_angle
-                    
-                    # Draw indicator point on feed
+                    # If the distance is large, your hand is extended open!
+                    if (point_low - point_high) > 35:
+                        print("Hand State: OPEN! -> Extending all fingers.")
+                        kit.servo[1].angle = FINGER_OPEN  # Thumb
+                        kit.servo[2].angle = FINGER_OPEN  # Index
+                        kit.servo[3].angle = FINGER_OPEN  # Middle
+                        kit.servo[4].angle = FINGER_OPEN  # Ring
+                        kit.servo[5].angle = FINGER_OPEN  # Pinky
+                    else:
+                        print("Hand State: CLOSED! -> Clenching fist.")
+                        kit.servo[1].angle = FINGER_CLOSE
+                        kit.servo[2].angle = FINGER_CLOSE
+                        kit.servo[3].angle = FINGER_CLOSE
+                        kit.servo[4].angle = FINGER_CLOSE
+                        kit.servo[5].angle = FINGER_CLOSE
+
+                    # Visual feedback dot on screen
                     cv2.circle(frame, (int(wrist_x), int(joints[0][1])), 8, (0, 255, 0), -1)
 
-        cv2.imshow("FYP Robotic Arm - AI Tracking", frame)
+        cv2.imshow("FYP Bionic Hand - AI Control", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
